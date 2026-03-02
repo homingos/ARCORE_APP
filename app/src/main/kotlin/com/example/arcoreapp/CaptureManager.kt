@@ -7,7 +7,6 @@ import com.google.gson.GsonBuilder
 import kotlinx.coroutines.launch
 import java.io.File
 import java.io.FileOutputStream
-import java.text.SimpleDateFormat
 import java.util.*
 
 import com.google.ar.core.RecordingConfig
@@ -18,9 +17,9 @@ class CaptureManager(private val context: Context) {
 
     private val gson = GsonBuilder().setPrettyPrinting().create()
     private var currentDir: File? = null
-    private var rawFramesDir: File? = null
-    private var annotatedFramesDir: File? = null
-    private val annotations = mutableListOf<AnnotationEntry>()
+    private var rgbDir: File? = null
+    private var annotationsDir: File? = null
+    private var debugOverlayDir: File? = null
     private val ioDispatcher = kotlinx.coroutines.Dispatchers.IO
     private val scope = kotlinx.coroutines.MainScope()
     
@@ -39,13 +38,14 @@ class CaptureManager(private val context: Context) {
         currentDir = File(categoryFolder, "video_${indexStr}_$category")
         currentDir?.mkdirs()
         
-        // Unified Resolution Folders
-        rawFramesDir = File(currentDir, "raw_frames")
-        rawFramesDir?.mkdirs()
-        annotatedFramesDir = File(currentDir, "annotated_frames")
-        annotatedFramesDir?.mkdirs()
-        
-        annotations.clear()
+        // FINAL_DATASET-style layout.
+        rgbDir = File(currentDir, "rgb")
+        rgbDir?.mkdirs()
+        annotationsDir = File(currentDir, "annotations")
+        annotationsDir?.mkdirs()
+        // Optional visualization output for manual QA.
+        debugOverlayDir = File(currentDir, "annotated_frames")
+        debugOverlayDir?.mkdirs()
 
         // Start ARCore Session Recording (Raw Sensor Feed)
         // Note: This remains in sensor resolution (640x480) as it's a raw dump.
@@ -63,19 +63,18 @@ class CaptureManager(private val context: Context) {
     }
 
     fun saveFrame(bitmap: Bitmap, entry: AnnotationEntry) {
-        val rawDir = this.rawFramesDir ?: return
-        val annDir = this.annotatedFramesDir ?: return
+        val rgb = this.rgbDir ?: return
+        val anns = this.annotationsDir ?: return
+        val overlay = this.debugOverlayDir
+        val frameStem = String.format(Locale.US, "%06d", entry.frameId)
 
-        val rawFile = File(rawDir, entry.image)
-        val annFile = File(annDir, entry.image)
+        val rawFile = File(rgb, "$frameStem.png")
+        val annJsonFile = File(anns, "$frameStem.json")
+        val annOverlayFile = if (overlay != null) File(overlay, "$frameStem.png") else null
         
         // 1. Create Annotated Version
         val annotatedBitmap = drawBoxOnBitmap(bitmap, entry.keypoints2d)
-        val format = if (entry.image.lowercase(Locale.US).endsWith(".png")) {
-            Bitmap.CompressFormat.PNG
-        } else {
-            Bitmap.CompressFormat.JPEG
-        }
+        val format = Bitmap.CompressFormat.PNG
         
         scope.launch(ioDispatcher) {
             try {
@@ -83,19 +82,19 @@ class CaptureManager(private val context: Context) {
                 FileOutputStream(rawFile).use { out ->
                     bitmap.compress(format, 100, out)
                 }
-                // Save Annotated Frame
-                FileOutputStream(annFile).use { out ->
-                    annotatedBitmap.compress(format, 100, out)
+                // Save Per-frame annotation JSON (FINAL_DATASET style)
+                annJsonFile.writeText(gson.toJson(entry))
+                // Save optional annotated frame
+                if (annOverlayFile != null) {
+                    FileOutputStream(annOverlayFile).use { out ->
+                        annotatedBitmap.compress(format, 100, out)
+                    }
                 }
                 // Clean up annotated bitmap memory
                 annotatedBitmap.recycle()
             } catch (e: Exception) {
                 e.printStackTrace()
             }
-        }
-        
-        synchronized(annotations) {
-            annotations.add(entry)
         }
     }
 
@@ -155,7 +154,6 @@ class CaptureManager(private val context: Context) {
                 e.printStackTrace()
             }
         }
-        saveAnnotationsLocal()
         incrementCount(category)
     }
 
@@ -166,15 +164,6 @@ class CaptureManager(private val context: Context) {
 
     fun getCount(category: String): Int {
         return prefs.getInt("count_$category", 0)
-    }
-
-    private fun saveAnnotationsLocal() {
-        scope.launch(ioDispatcher) {
-            val jsonFile = File(currentDir, "annotations.json")
-            synchronized(annotations) {
-                jsonFile.writeText(gson.toJson(annotations))
-            }
-        }
     }
 
     fun getCapturePath(): String {

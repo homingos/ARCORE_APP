@@ -124,7 +124,7 @@ class MainActivity : AppCompatActivity() {
             config.instantPlacementMode = Config.InstantPlacementMode.DISABLED // Force stable Plane tracking for dataset recording
             config.planeFindingMode = Config.PlaneFindingMode.HORIZONTAL
             config.focusMode = Config.FocusMode.AUTO
-            config.updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
+            config.updateMode = Config.UpdateMode.BLOCKING
             
             // --- AUGMENTED IMAGES (Marker-Based Snap) ---
             val imageDatabase = AugmentedImageDatabase(arSession)
@@ -160,29 +160,28 @@ class MainActivity : AppCompatActivity() {
 
     private var lastStatusState = ""
 
-    fun onFrameRendered(frame: Frame, mvp: FloatArray, model: FloatArray, view: FloatArray) {
+    fun onFrameRendered(frame: Frame, model: FloatArray, view: FloatArray) {
         if (isRecording && !isProcessingFrame) {
             val currentTime = System.currentTimeMillis()
             if (currentTime - lastFrameTime >= 33) { // ~30 FPS
-                processFrameForRecording(frame, model, view, mvp)
+                processFrameForRecording(frame, model, view)
                 lastFrameTime = currentTime
             }
         }
         
-        // Keep marker updates disabled while recording to avoid dynamic anchor drift.
-        if (!isRecording && renderer.currentAnchor == null) {
-            val updatedImages = frame.getUpdatedTrackables(AugmentedImage::class.java)
-            val markerImage =
-                updatedImages.firstOrNull {
-                    it.name == "coke_marker" &&
-                        it.trackingState == TrackingState.TRACKING &&
-                        it.trackingMethod == AugmentedImage.TrackingMethod.FULL_TRACKING
-                }
+        val updatedImages = frame.getUpdatedTrackables(AugmentedImage::class.java)
+        val markerImage =
+            updatedImages.firstOrNull {
+                it.name == "coke_marker" &&
+                    it.trackingState == TrackingState.TRACKING &&
+                    it.trackingMethod == AugmentedImage.TrackingMethod.FULL_TRACKING
+            }
 
-            if (markerImage != null) {
-                renderer.trackedImage = markerImage
+        if (markerImage != null) {
+            renderer.trackedImage = markerImage
+            if (renderer.currentAnchor == null) {
                 stableMarkerFrames += 1
-                if (renderer.currentAnchor == null && stableMarkerFrames >= MARKER_STABLE_FRAMES_REQUIRED) {
+                if (stableMarkerFrames >= MARKER_STABLE_FRAMES_REQUIRED) {
                     renderer.snapToImage(markerImage)
                     renderer.trackedImage = null
                     stableMarkerFrames = 0
@@ -192,12 +191,14 @@ class MainActivity : AppCompatActivity() {
                 }
             } else {
                 stableMarkerFrames = 0
-                if (renderer.trackedImage?.trackingState == TrackingState.STOPPED) {
-                    renderer.trackedImage = null
+                val relocked = renderer.tryCorrectAnchorWithMarker(markerImage)
+                if (relocked) {
+                    updateStatusTextOnce("Anchor corrected using marker relocalization.")
                 }
             }
-        } else if (renderer.currentAnchor != null) {
+        } else {
             stableMarkerFrames = 0
+            renderer.trackedImage = null
         }
 
         // Update UI status based on tracking state
@@ -222,7 +223,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun processFrameForRecording(frame: Frame, model: FloatArray, view: FloatArray, mvp: FloatArray) {
+    private fun processFrameForRecording(frame: Frame, model: FloatArray, view: FloatArray) {
         if (arSession == null) return
         isProcessingFrame = true
         val camera = frame.camera
@@ -289,28 +290,14 @@ class MainActivity : AppCompatActivity() {
         val newViewMatrix = FloatArray(16)
         camera.pose.inverse().toMatrix(newViewMatrix, 0)
 
-        // Extract Sparse Point Cloud (Optional, keep as is)
-        val pointCloud = mutableListOf<List<Float>>()
-        try {
-            val rawCloud = frame.acquirePointCloud()
-            val buffer = rawCloud.points
-            val count = buffer.remaining() / 4
-            for (i in 0 until count) {
-                pointCloud.add(listOf(buffer.get(i * 4), buffer.get(i * 4 + 1), buffer.get(i * 4 + 2)))
-            }
-            rawCloud.release()
-        } catch (e: Exception) {}
-
         val frameId = frameCount++
-        val imageName = "frame_${String.format("%04d", frameId)}.png"
+        val imageName = String.format("%06d.png", frameId)
         
         val entry = AnnotationGenerator.createEntry(
-            frameId, imageName, model, newViewMatrix, mvp, pointCloud,
+            frameId, imageName, model, newViewMatrix,
             newFx, newFy,
             newCx, newCy,
-            newW, newH,
-            selectedCategory,
-            System.currentTimeMillis()
+            newW, newH
         )
 
         // Save unified 512x512 frame.

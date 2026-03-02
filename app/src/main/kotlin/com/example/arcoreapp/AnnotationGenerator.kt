@@ -16,11 +16,7 @@ data class AnnotationEntry(
     @SerializedName("model_matrix") val modelMatrix: List<Float>,
     @SerializedName("pose_6dof") val pose6dof: Pose6Dof,
     @SerializedName("pose_9dof") val pose9dof: Pose9Dof,
-    @SerializedName("mvp_matrix") val mvpMatrix: List<Float>,
-    @SerializedName("point_cloud") val pointCloud: List<List<Float>>?,
-    @SerializedName("environment") val environment: EnvironmentMeta,
-    @SerializedName("label") val label: String,
-    @SerializedName("timestamp") val timestamp: Long
+    @SerializedName("environment") val environment: EnvironmentMeta
 )
 
 data class CameraIntrinsics(
@@ -44,8 +40,8 @@ data class Pose9Dof(
 )
 
 data class EnvironmentMeta(
-    @SerializedName("source") val source: String,
-    @SerializedName("tracking_mode") val trackingMode: String
+    @SerializedName("hdri_count_available") val hdriCountAvailable: Int,
+    @SerializedName("hdri_path") val hdriPath: String
 )
 
 object AnnotationGenerator {
@@ -84,12 +80,8 @@ object AnnotationGenerator {
         imageName: String,
         modelMatrix: FloatArray,
         viewMatrix: FloatArray,
-        mvpMatrix: FloatArray,
-        points: List<List<Float>>,
         fx: Float, fy: Float, cx: Float, cy: Float,
-        width: Int, height: Int,
-        label: String,
-        timestamp: Long
+        width: Int, height: Int
     ): AnnotationEntry {
         val keypoints3d = mutableListOf<List<Float>>()
         val keypoints2d = mutableListOf<List<Float>>()
@@ -113,12 +105,6 @@ object AnnotationGenerator {
             visibility.add(if (isVisible) 1.0f else 0.0f)
         }
 
-        val pointCloudCam = points.map { pt ->
-            val ptCam4 = FloatArray(4)
-            android.opengl.Matrix.multiplyMV(ptCam4, 0, viewMatrix, 0, floatArrayOf(pt[0], pt[1], pt[2], 1.0f), 0)
-            listOf(ptCam4[0], ptCam4[1], -ptCam4[2])
-        }
-
         val translation = listOf(modelMatrix[12], modelMatrix[13], modelMatrix[14])
         val (rotation, scale) = computeRotationAndScale(modelMatrix)
 
@@ -136,11 +122,7 @@ object AnnotationGenerator {
             modelMatrix = modelMatrix.toList(),
             pose6dof = Pose6Dof(translation = translation, rotation = rotation),
             pose9dof = Pose9Dof(translation = translation, rotation = rotation, scale = scale),
-            mvpMatrix = mvpMatrix.toList(),
-            pointCloud = pointCloudCam,
-            environment = EnvironmentMeta(source = "arcore_app", trackingMode = "marker_or_anchor"),
-            label = label,
-            timestamp = timestamp
+            environment = EnvironmentMeta(hdriCountAvailable = 0, hdriPath = "arcore_capture")
         )
     }
 }
