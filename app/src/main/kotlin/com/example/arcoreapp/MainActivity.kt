@@ -124,7 +124,7 @@ class MainActivity : AppCompatActivity() {
             config.instantPlacementMode = Config.InstantPlacementMode.DISABLED // Force stable Plane tracking for dataset recording
             config.planeFindingMode = Config.PlaneFindingMode.HORIZONTAL
             config.focusMode = Config.FocusMode.AUTO
-            config.updateMode = Config.UpdateMode.BLOCKING
+            config.updateMode = Config.UpdateMode.LATEST_CAMERA_IMAGE
             
             // --- AUGMENTED IMAGES (Marker-Based Snap) ---
             val imageDatabase = AugmentedImageDatabase(arSession)
@@ -169,17 +169,18 @@ class MainActivity : AppCompatActivity() {
             }
         }
         
-        val updatedImages = frame.getUpdatedTrackables(AugmentedImage::class.java)
-        val markerImage =
-            updatedImages.firstOrNull {
-                it.name == "coke_marker" &&
-                    it.trackingState == TrackingState.TRACKING &&
-                    it.trackingMethod == AugmentedImage.TrackingMethod.FULL_TRACKING
-            }
+        // Marker-based snap is only used for initial lock; never auto-relock afterwards.
+        if (!isRecording && renderer.currentAnchor == null) {
+            val updatedImages = frame.getUpdatedTrackables(AugmentedImage::class.java)
+            val markerImage =
+                updatedImages.firstOrNull {
+                    it.name == "coke_marker" &&
+                        it.trackingState == TrackingState.TRACKING &&
+                        it.trackingMethod == AugmentedImage.TrackingMethod.FULL_TRACKING
+                }
 
-        if (markerImage != null) {
-            renderer.trackedImage = markerImage
-            if (renderer.currentAnchor == null) {
+            if (markerImage != null) {
+                renderer.trackedImage = markerImage
                 stableMarkerFrames += 1
                 if (stableMarkerFrames >= MARKER_STABLE_FRAMES_REQUIRED) {
                     renderer.snapToImage(markerImage)
@@ -191,12 +192,9 @@ class MainActivity : AppCompatActivity() {
                 }
             } else {
                 stableMarkerFrames = 0
-                val relocked = renderer.tryCorrectAnchorWithMarker(markerImage)
-                if (relocked) {
-                    updateStatusTextOnce("Anchor corrected using marker relocalization.")
-                }
+                renderer.trackedImage = null
             }
-        } else {
+        } else if (renderer.currentAnchor != null) {
             stableMarkerFrames = 0
             renderer.trackedImage = null
         }

@@ -72,12 +72,6 @@ class ARRenderer(private val context: Context) : GLSurfaceView.Renderer {
     @Volatile var isCylinderMode = false // Toggle between Box and Cylinder
     @Volatile var isRecordingCapture = false
     @Volatile var enableLiveMarkerFollow = false // Disabled for production stability; use anchor lock instead.
-    private var markerRelockCandidateFrames = 0
-    private var lastMarkerRelockMs = 0L
-    private val markerRelockFrameThreshold = 4
-    private val markerRelockCooldownMs = 1200L
-    private val markerRelockDistanceThresholdM = 0.012f // 1.2 cm
-    private val markerRelockAngleThresholdDeg = 4.0f
 
     // Bounding Box Color [R, G, B, A]
     @Volatile var mBoxColor = floatArrayOf(1.0f, 0.0f, 0.0f, 0.3f) // Default Red
@@ -95,7 +89,6 @@ class ARRenderer(private val context: Context) : GLSurfaceView.Renderer {
     fun resetAnchor() {
         currentAnchor?.detach()
         currentAnchor = null
-        markerRelockCandidateFrames = 0
     }
 
     @Synchronized
@@ -235,56 +228,6 @@ class ARRenderer(private val context: Context) : GLSurfaceView.Renderer {
             resetPoseSmoothing()
             image.centerPose.toMatrix(smoothedMatrix, 0)
         }
-    }
-
-    private fun distance3(a: FloatArray, b: FloatArray): Float {
-        val dx = a[0] - b[0]
-        val dy = a[1] - b[1]
-        val dz = a[2] - b[2]
-        return kotlin.math.sqrt((dx * dx + dy * dy + dz * dz).toDouble()).toFloat()
-    }
-
-    private fun rotationDeltaDeg(qAIn: FloatArray, qBIn: FloatArray): Float {
-        val qA = normalizeQuat(qAIn)
-        val qB = normalizeQuat(qBIn)
-        val dotRaw = qA[0] * qB[0] + qA[1] * qB[1] + qA[2] * qB[2] + qA[3] * qB[3]
-        val dot = kotlin.math.abs(dotRaw).coerceIn(0f, 1f)
-        return (2.0 * kotlin.math.acos(dot.toDouble()) * 180.0 / Math.PI).toFloat()
-    }
-
-    @Synchronized
-    fun tryCorrectAnchorWithMarker(image: AugmentedImage): Boolean {
-        val anchor = currentAnchor ?: return false
-        if (image.trackingState != com.google.ar.core.TrackingState.TRACKING) return false
-        if (image.trackingMethod != AugmentedImage.TrackingMethod.FULL_TRACKING) return false
-        if (anchor.trackingState != com.google.ar.core.TrackingState.TRACKING) return false
-
-        val now = System.currentTimeMillis()
-        if (now - lastMarkerRelockMs < markerRelockCooldownMs) return false
-
-        val anchorPose = anchor.pose
-        val imagePose = image.centerPose
-
-        val distanceErrorM = distance3(anchorPose.translation, imagePose.translation)
-        val angleErrorDeg = rotationDeltaDeg(anchorPose.rotationQuaternion, imagePose.rotationQuaternion)
-        val shouldRelock =
-            distanceErrorM > markerRelockDistanceThresholdM || angleErrorDeg > markerRelockAngleThresholdDeg
-
-        if (!shouldRelock) {
-            markerRelockCandidateFrames = 0
-            return false
-        }
-
-        markerRelockCandidateFrames += 1
-        if (markerRelockCandidateFrames < markerRelockFrameThreshold) return false
-
-        resetAnchor()
-        currentAnchor = image.createAnchor(image.centerPose)
-        resetPoseSmoothing()
-        image.centerPose.toMatrix(smoothedMatrix, 0)
-        lastMarkerRelockMs = now
-        markerRelockCandidateFrames = 0
-        return true
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
